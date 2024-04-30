@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/songgao/water"
+	"github.com/vishvananda/netlink"
+
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
@@ -69,6 +72,45 @@ func main() {
 	}
 
 	defer node.Stop()
+
+	// Get the IPv6 address from Yggdrasil
+	ipv6Address := node.Address().String()
+
+	// Create a new TUN interface
+	config := water.Config{
+		DeviceType: water.TUN,
+	}
+	config.Name = "tun1" // You may want the OS to pick a name automatically
+	iface, err := water.New(config)
+	if err != nil {
+		log.Fatalf("Unable to create TUN device: %v", err)
+	}
+	defer iface.Close()
+
+	log.Printf("Interface %s created\n", iface.Name())
+
+	// Find the network interface represented by the TUN device
+	link, err := netlink.LinkByName(iface.Name())
+	if err != nil {
+		log.Fatalf("Failed to find interface '%s': %v", iface.Name(), err)
+	}
+
+	// Set the interface up
+	if err := netlink.LinkSetUp(link); err != nil {
+		log.Fatalf("Failed to set interface %s up: %v", iface.Name(), err)
+	}
+
+	// Assign IPv6 address to the interface
+	addr, err := netlink.ParseAddr(ipv6Address + "/7") // Ensure correct prefix length
+	if err != nil {
+		log.Fatalf("Invalid IPv6 address: %v", err)
+	}
+	if err := netlink.AddrAdd(link, addr); err != nil {
+		log.Fatalf("Failed to add IPv6 address to interface %s: %v", iface.Name(), err)
+	}
+
+	// Your main application logic here, for example starting a web server
+	log.Println("Yggdrasil node is running with IP:", ipv6Address)
 
 	// Set up HTTP server
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
