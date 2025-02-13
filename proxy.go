@@ -40,6 +40,7 @@ func main() {
 	// Start the TLS proxy with SNI interception.
 	startTLSProxy()
 	startOOBListener()
+}
 
 func loadConfig(path string) error {
 	f, err := os.Open(path)
