@@ -58,7 +58,14 @@ func loadConfig(path string) error {
 // startTLSProxy starts the TLS proxy with SNI interception.
 func startTLSProxy() {
 	listener, err := tls.Listen("tcp", config.LocalProxyAddr, &tls.Config{
-		GetConfigForClient: handleClientHello,
+		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			fmt.Println("DEBUG: Client requested SNI:", chi.ServerName) // Log SNI every time
+			realSNI := chi.ServerName
+			if realSNI == "" {
+				fmt.Println("❌ ERROR: Client did not send SNI")
+			}
+			return handleClientHello(chi)
+		},
 	})
 	if err != nil {
 		log.Fatalf("❌ Failed to start TLS Proxy: %v", err)
