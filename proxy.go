@@ -39,7 +39,7 @@ func main() {
 
 	// Start the TLS proxy with SNI interception.
 	startTLSProxy()
-}
+	startOOBListener()
 
 func loadConfig(path string) error {
 	f, err := os.Open(path)
@@ -103,6 +103,47 @@ func handleTLSConnection(clientConn net.Conn) {
 	// Relay data between client and target.
 	go io.Copy(targetConn, clientConn)
 	io.Copy(clientConn, targetConn)
+}
+
+// startOOBListener starts a QUIC listener on the configured OOB port.
+func startOOBListener() {
+	// Bind to all IPv6 interfaces so that we pick up our Yggdrasil interface.
+	listener, err := quic.ListenAddr(config.OOBPort, generateTLSConfig(), nil)
+	if err != nil {
+		log.Fatalf("❌ ERROR: Failed to start OOB listener: %v", err)
+	}
+	fmt.Println("🔹 OOB Listener started on", config.OOBPort)
+
+	for {
+		session, err := listener.Accept(context.Background())
+		if err != nil {
+			log.Println("❌ ERROR: Failed to accept OOB session:", err)
+			continue
+		}
+		fmt.Println("🔹 OOB session established")
+		go handleOOBSession(session)
+	}
+}
+
+// handleOOBSession reads the real SNI from an incoming QUIC stream.
+func handleOOBSession(session quic.Connection) {
+	stream, err := session.AcceptStream(context.Background())
+	if err != nil {
+		log.Println("❌ ERROR: Failed to accept OOB stream:", err)
+		return
+	}
+	defer stream.Close()
+
+	buf := make([]byte, 256)
+	n, err := stream.Read(buf)
+	if err != nil {
+		log.Println("❌ ERROR: Reading OOB message failed:", err)
+		return
+	}
+	receivedSNI := string(buf[:n])
+	fmt.Println("🔹 Received real SNI via OOB:", receivedSNI)
+	// Here you might update internal state or rotate peers as needed.
+	// For demonstration, we simply log it.
 }
 
 // sendOOBMessage sends the real SNI to a remote OOB peer.
