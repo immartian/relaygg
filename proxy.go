@@ -97,19 +97,24 @@ func handleClientHello(chi *tls.ClientHelloInfo) (*tls.Config, error) {
 // handleTLSConnection manages TLS handshakes and relays data.
 func handleTLSConnection(clientConn net.Conn) {
 	defer clientConn.Close()
+	fmt.Println("DEBUG: Handling TLS connection from client")
 
-	// Connect to the fake target using FakeSNI
-	targetConn, err := tls.Dial("tcp", config.FakeSNI+":443", &tls.Config{
-		ServerName:         config.FakeSNI,
+	// Generate a new TLS configuration with FakeSNI
+	tlsConfig := &tls.Config{
+		ServerName:         config.FakeSNI, // Ensure FakeSNI is injected
 		InsecureSkipVerify: true,
-	})
+	}
+
+	// Connect to FakeSNI destination
+	targetConn, err := tls.Dial("tcp", config.FakeSNI+":443", tlsConfig)
 	if err != nil {
 		log.Println("❌ ERROR: FakeSNI connection failed:", err)
 		return
 	}
 	defer targetConn.Close()
+	fmt.Println("DEBUG: Connected to remote server using FakeSNI:", config.FakeSNI)
 
-	// Relay data between client and fake target
+	// Relay data
 	go io.Copy(targetConn, clientConn)
 	io.Copy(clientConn, targetConn)
 }
@@ -197,6 +202,16 @@ func sendOOBMessage(reqID, realSNI string) {
 		return
 	}
 	fmt.Println("DEBUG: Sent real SNI via OOB to", peer, ":", msg)
+
+	// **NEW: Wait for acknowledgment before closing**
+	buf := make([]byte, 256)
+	n, err := stream.Read(buf)
+	if err != nil && err != io.EOF {
+		log.Println("❌ ERROR: Reading OOB response failed:", err)
+		return
+	}
+	ack := string(buf[:n])
+	fmt.Println("🔹 Received acknowledgment from OOB peer:", ack)
 }
 
 // generateRequestID creates a unique identifier for request mapping.
