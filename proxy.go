@@ -180,15 +180,6 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
-// For simplicity, we embed dummy certs here. In production, use proper certificates.
-func generateSelfSignedCert() tls.Certificate {
-	cert, err := tls.X509KeyPair([]byte(testCert), []byte(testKey))
-	if err != nil {
-		log.Fatal(err)
-	}
-	return cert
-}
-
 func generateSelfSignedCert() tls.Certificate {
 	cert, err := tls.LoadX509KeyPair("cert.pem", "cert.key")
 	if err != nil {
