@@ -1,0 +1,10 @@
+  {
+    "local_proxy_addr": "127.0.0.1:8443",
+    "oob_port": "[::]:8008",
+    "oob_peers": [
+        "[206:6da3:9f2:60d2:9769:21c6:10fe:11d4]:8008"
+    ],
+    "fake_sni": "harvard.edu",
+    "real_sni": "wikipedia.org"
+  }
+  
