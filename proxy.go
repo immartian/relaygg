@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"time"
 
 	quic "github.com/quic-go/quic-go"
 )
@@ -142,14 +141,12 @@ func handleOOBSession(session quic.Connection) {
 
 	buf := make([]byte, 256)
 	n, err := stream.Read(buf)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		log.Println("❌ ERROR: Reading OOB message failed:", err)
 		return
 	}
 	receivedSNI := string(buf[:n])
 	fmt.Println("🔹 Received real SNI via OOB:", receivedSNI)
-	// Here you might update internal state or rotate peers as needed.
-	// For demonstration, we simply log it.
 }
 
 // sendOOBMessage sends the real SNI to a remote OOB peer.
@@ -170,7 +167,6 @@ func sendOOBMessage(realSNI string) {
 	session, err := quic.DialAddr(ctx, peer, tlsConfig, nil)
 	if err != nil {
 		log.Println("❌ ERROR: Failed to open OOB channel to", peer, ":", err)
-		// Rotate to next peer if available.
 		currentOOBPeer = (currentOOBPeer + 1) % len(config.OOBPeers)
 		return
 	}
@@ -184,15 +180,17 @@ func sendOOBMessage(realSNI string) {
 	}
 	defer stream.Close()
 
-	_, err = stream.Write([]byte(realSNI))
+	// Ensure we write the entire message before closing.
+	_, err = stream.Write([]byte(realSNI + "\n")) // Append newline to mark end-of-message
 	if err != nil {
 		log.Println("❌ ERROR: Writing to OOB stream to", peer, "failed:", err)
 		currentOOBPeer = (currentOOBPeer + 1) % len(config.OOBPeers)
 		return
 	}
+
+	// Flush the stream to make sure it's fully written before closing.
+	stream.Close()
 	fmt.Println("DEBUG: Successfully sent real SNI via OOB to", peer, ":", realSNI)
-	// Wait a bit to ensure transmission before closing the stream.
-	time.Sleep(200 * time.Millisecond)
 }
 
 // For QUIC, we need a TLS configuration with a certificate.
