@@ -37,9 +37,14 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	fmt.Println("✅ Config loaded successfully")
+
 	// Start the TLS proxy with SNI interception.
-	startTLSProxy()
-	startOOBListener()
+	go startTLSProxy() // Run in a separate goroutine
+	fmt.Println("✅ TLS Proxy initiated")
+
+	// Start the OOB QUIC listener.
+	startOOBListener() // Run in the main thread
 }
 
 func loadConfig(path string) error {
