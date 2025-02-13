@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	quic "github.com/quic-go/quic-go"
 )
@@ -139,6 +140,7 @@ func handleOOBSession(session quic.Connection) {
 	}
 	defer stream.Close()
 
+	// Read until newline (`\n`) to ensure full message is received
 	buf := make([]byte, 256)
 	n, err := stream.Read(buf)
 	if err != nil && err != io.EOF {
@@ -180,16 +182,17 @@ func sendOOBMessage(realSNI string) {
 	}
 	defer stream.Close()
 
-	// Ensure we write the entire message before closing.
-	_, err = stream.Write([]byte(realSNI + "\n")) // Append newline to mark end-of-message
+	// Send the real SNI with a newline to indicate message completion.
+	_, err = stream.Write([]byte(realSNI + "\n"))
 	if err != nil {
 		log.Println("❌ ERROR: Writing to OOB stream to", peer, "failed:", err)
 		currentOOBPeer = (currentOOBPeer + 1) % len(config.OOBPeers)
 		return
 	}
 
-	// Flush the stream to make sure it's fully written before closing.
-	stream.Close()
+	// **FIX: Keep stream open until Peer2 reads it**
+	time.Sleep(500 * time.Millisecond)
+
 	fmt.Println("DEBUG: Successfully sent real SNI via OOB to", peer, ":", realSNI)
 }
 
