@@ -1,12 +1,12 @@
 package main
 
 import (
-	"crypto/tls"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
@@ -53,7 +53,10 @@ func generateSelfSignedCert() tls.Certificate {
 	}
 	pemCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed()})
-	cert, err := tls.X509KeyPair(pemCert, pemKey); if err != nil { log.Fatal(err) }
+	cert, err := tls.X509KeyPair(pemCert, pemKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 	return cert
 }
 
@@ -130,8 +133,7 @@ func (o *OOBModule) HandleOOBSession(conn net.Conn) {
 		return
 	}
 
-	log.Printf("{"event": "oob_request_received", "request_id": "%s", "data": "%s"}"
-		, message.RequestID, message.Data)
+	log.Printf("{\"event\": \"oob_request_received\", \"request_id\": \"%s\", \"data\": \"%s\"}", message.RequestID, message.Data)
 	response := fmt.Sprintf("ACK: %s", message.Data)
 	conn.Write([]byte(response))
 
