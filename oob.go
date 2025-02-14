@@ -1,16 +1,17 @@
 package main
 
 import (
+	"crypto/tls"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -33,30 +34,33 @@ type OOBModule struct {
 	requestMap sync.Map // Maps request IDs to response channels
 }
 
+// isValidYggdrasilAddress validates if a given peer address is a valid Yggdrasil address.
+func isValidYggdrasilAddress(address string) bool {
+	yggPattern := `^[a-fA-F0-9:]+$` // Simplified regex for Yggdrasil addresses
+	matched, _ := regexp.MatchString(yggPattern, address)
+	return matched
+}
+
 // generateSelfSignedCert generates a self-signed TLS certificate.
 func generateSelfSignedCert() tls.Certificate {
 	priv, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		log.Fatal(err)
 	}
-	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{}, &x509.Certificate{}, priv.PublicKey, priv)
+	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{}, &x509.Certificate{}, &priv.PublicKey, priv)
 	if err != nil {
 		log.Fatal(err)
 	}
 	pemCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed[:32]})
-	cert, err := tls.X509KeyPair(pemCert, pemKey)
-	if err != nil {
-		log.Fatal(err)
-	}
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed()})
+	cert, err := tls.X509KeyPair(pemCert, pemKey); if err != nil { log.Fatal(err) }
 	return cert
 }
 
 // NewOOBModule initializes the QUIC transport over Yggdrasil.
 func NewOOBModule(peers []string) (*OOBModule, error) {
 	cert := generateSelfSignedCert()
-	logger := core.NewLogger(os.Stdout)
-
+	logger := log.New(os.Stdout, "core: ", log.LstdFlags)
 	yggNode, err := core.New(&cert, logger, core.WithPrivateKey(priv))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Yggdrasil core: %v", err)
@@ -76,15 +80,21 @@ func NewOOBModule(peers []string) (*OOBModule, error) {
 
 // SendOOBRequest sends a request to an OOB peer and waits for a response.
 func (o *OOBModule) SendOOBRequest(peer, data string) (string, error) {
+	if !isValidYggdrasilAddress(peer) {
+		return "", fmt.Errorf("invalid Yggdrasil address: %s", peer)
+	}
+
 	requestID := fmt.Sprintf("%d", time.Now().UnixNano())
 	message := OOBMessage{RequestID: requestID, Data: data}
 	encoded, _ := json.Marshal(message)
 
-	conn, err := o.Transport.Dial(peer, "oob-session")
+	conn, err := o.Transport.Dial("yggdrasil", peer)
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to peer %s: %v", peer, err)
 	}
-	defer conn.Close()
+	if conn != nil {
+		defer conn.Close()
+	}
 
 	_, err = conn.Write(encoded)
 	if err != nil {
@@ -92,8 +102,10 @@ func (o *OOBModule) SendOOBRequest(peer, data string) (string, error) {
 	}
 
 	// Wait for response
-	respChan := make(chan string)
+	respChan := make(chan string, 1) // Buffered to avoid blocking if no response is sent
 	o.requestMap.Store(requestID, respChan)
+	defer o.requestMap.Delete(requestID)
+
 	select {
 	case response := <-respChan:
 		return response, nil
@@ -118,14 +130,18 @@ func (o *OOBModule) HandleOOBSession(conn net.Conn) {
 		return
 	}
 
-	log.Printf("🔹 Received OOB request: %s -> %s\n", message.RequestID, message.Data)
+	log.Printf("{"event": "oob_request_received", "request_id": "%s", "data": "%s"}"
+		, message.RequestID, message.Data)
 	response := fmt.Sprintf("ACK: %s", message.Data)
 	conn.Write([]byte(response))
 
 	// Store response for requestor if it's an awaited request
 	if ch, ok := o.requestMap.Load(message.RequestID); ok {
-		ch.(chan string) <- response
-		o.requestMap.Delete(message.RequestID)
+		select {
+		case ch.(chan string) <- response:
+		default:
+			log.Println("⚠️ Response channel was not ready, avoiding deadlock")
+		}
 	}
 }
 
