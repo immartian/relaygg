@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
@@ -28,18 +32,36 @@ type OOBModule struct {
 	requestMap sync.Map // Maps request IDs to response channels
 }
 
+// generateSelfSignedCert generates a self-signed TLS certificate.
+func generateSelfSignedCert() tls.Certificate {
+	priv, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		log.Fatal(err)
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{}, &x509.Certificate{}, priv.Public(), priv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pemCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed()})
+	cert, err := tls.X509KeyPair(pemCert, pemKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return cert
+}
+
 // NewOOBModule initializes the QUIC transport over Yggdrasil.
 func NewOOBModule(peers []string) (*OOBModule, error) {
-	yggNode, err := core.New(nil)
+	cert := generateSelfSignedCert()
+	logger := log.Default()
+
+	yggNode, err := core.New(&cert, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Yggdrasil core: %v", err)
 	}
-	tlsCert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load TLS certificate: %v", err)
-	}
 
-	quicTransport, err := yggquic.New(yggNode, tlsCert, nil)
+	quicTransport, err := yggquic.New(yggNode, &cert, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start QUIC transport: %v", err)
 	}
@@ -57,7 +79,7 @@ func (o *OOBModule) SendOOBRequest(peer, data string) (string, error) {
 	message := OOBMessage{RequestID: requestID, Data: data}
 	encoded, _ := json.Marshal(message)
 
-	conn, err := o.Transport.Dial(peer)
+	conn, err := o.Transport.Dial(peer, "oob-session")
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to peer %s: %v", peer, err)
 	}
