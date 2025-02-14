@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	yggquic "github.com/yggdrasil-network/yggquic"
 )
 
@@ -146,7 +145,7 @@ func startOOBListener() {
 }
 
 // handleOOBSession processes incoming SNI messages and returns responses.
-func handleOOBSession(session quic.Connection) {
+func handleOOBSession(session yggquic.Connection) {
 	stream, err := session.AcceptStream(context.Background())
 	if err != nil {
 		log.Println("ERROR: Failed to accept OOB stream:", err)
