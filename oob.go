@@ -1,124 +1,125 @@
 package main
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"sync"
+	"time"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"github.com/yggdrasil-network/yggquic"
 )
 
-type Config struct {
-	OOBPeers []string `json:"oob_peers"`
+// OOBMessage represents a basic OOB request.
+type OOBMessage struct {
+	RequestID string `json:"request_id"`
+	Data      string `json:"data"`
 }
 
-var config Config
-
-// OOBModule handles QUIC-based out-of-band communication over Yggdrasil.
+// OOBModule handles OOB communication via QUIC.
 type OOBModule struct {
 	Node       *core.Core
 	Transport  *yggquic.YggdrasilTransport
 	Peers      []string
 	mu         sync.Mutex
-	requestMap sync.Map // Stores request ID to response channel
+	requestMap sync.Map // Maps request IDs to response channels
 }
 
 // NewOOBModule initializes the QUIC transport over Yggdrasil.
-func NewOOBModule(configPath string) (*OOBModule, error) {
-	if err := loadConfig(configPath); err != nil {
-		return nil, fmt.Errorf("failed to load config: %v", err)
-	}
-
-	privateKey := ed25519.NewKeyFromSeed(make([]byte, 32))
-	yggNode, err := core.New(nil, core.WithPrivateKey(privateKey))
+func NewOOBModule(peers []string) (*OOBModule, error) {
+	yggNode, err := core.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Yggdrasil core: %v", err)
 	}
+	tlsCert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load TLS certificate: %v", err)
+	}
 
-	tlsCert := generateSelfSignedCert()
 	quicTransport, err := yggquic.New(yggNode, tlsCert, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start Yggdrasil QUIC transport: %v", err)
+		return nil, fmt.Errorf("failed to start QUIC transport: %v", err)
 	}
 
 	return &OOBModule{
 		Node:      yggNode,
 		Transport: quicTransport,
-		Peers:     config.OOBPeers,
+		Peers:     peers,
 	}, nil
 }
 
-func loadConfig(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	decoder := json.NewDecoder(f)
-	return decoder.Decode(&config)
-}
+// SendOOBRequest sends a request to an OOB peer and waits for a response.
+func (o *OOBModule) SendOOBRequest(peer, data string) (string, error) {
+	requestID := fmt.Sprintf("%d", time.Now().UnixNano())
+	message := OOBMessage{RequestID: requestID, Data: data}
+	encoded, _ := json.Marshal(message)
 
-// PerformTLSHandshake connects to the actual destination and extracts the ServerHello.
-func (o *OOBModule) PerformTLSHandshake(realSNI string) ([]byte, error) {
-	conn, err := tls.Dial("tcp", realSNI+":443", &tls.Config{
-		ServerName: realSNI,
-	})
+	conn, err := o.Transport.Dial(peer)
 	if err != nil {
-		return nil, fmt.Errorf("TLS handshake failed for %s: %v", realSNI, err)
+		return "", fmt.Errorf("failed to connect to peer %s: %v", peer, err)
 	}
 	defer conn.Close()
 
-	// Extract ServerHello raw bytes (this may require low-level access)
-	serverHello := conn.ConnectionState().PeerCertificates[0].Raw
-	return serverHello, nil
+	_, err = conn.Write(encoded)
+	if err != nil {
+		return "", fmt.Errorf("failed to send data: %v", err)
+	}
+
+	// Wait for response
+	respChan := make(chan string)
+	o.requestMap.Store(requestID, respChan)
+	select {
+	case response := <-respChan:
+		return response, nil
+	case <-time.After(5 * time.Second):
+		return "", fmt.Errorf("timeout waiting for response")
+	}
 }
 
-// HandleOOBSession processes incoming QUIC requests and performs a TLS handshake.
+// HandleOOBSession handles incoming OOB requests.
 func (o *OOBModule) HandleOOBSession(conn net.Conn) {
-	buf := make([]byte, 256)
+	defer conn.Close()
+	buf := make([]byte, 512)
 	n, err := conn.Read(buf)
 	if err != nil {
-		log.Println("❌ ERROR: Failed to read OOB message:", err)
-		return
-	}
-	message := string(buf[:n])
-
-	var reqID, realSNI string
-	fmt.Sscanf(message, "%s|%s", &reqID, &realSNI)
-	fmt.Printf("🔹 OOB received request: %s -> %s\n", reqID, realSNI)
-
-	// Perform real TLS handshake with destination
-	serverHello, err := o.PerformTLSHandshake(realSNI)
-	if err != nil {
-		log.Println("❌ ERROR: Failed to complete TLS handshake:", err)
+		log.Println("❌ Failed to read from connection:", err)
 		return
 	}
 
-	// Send ServerHello response back via OOB
-	conn.Write(serverHello)
+	var message OOBMessage
+	if err := json.Unmarshal(buf[:n], &message); err != nil {
+		log.Println("❌ Failed to parse JSON:", err)
+		return
+	}
+
+	log.Printf("🔹 Received OOB request: %s -> %s\n", message.RequestID, message.Data)
+	response := fmt.Sprintf("ACK: %s", message.Data)
+	conn.Write([]byte(response))
+
+	// Store response for requestor if it's an awaited request
+	if ch, ok := o.requestMap.Load(message.RequestID); ok {
+		ch.(chan string) <- response
+		o.requestMap.Delete(message.RequestID)
+	}
 }
 
-// generateSelfSignedCert generates a self-signed TLS certificate.
-func generateSelfSignedCert() tls.Certificate {
-	priv, _, err := ed25519.GenerateKey(rand.Reader)
+func main() {
+	peers := []string{"ygg_peer1", "ygg_peer2"}
+	oobModule, err := NewOOBModule(peers)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to initialize OOB module: %v", err)
 	}
-	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed()})
-	if pemKey == nil {
-		log.Fatal("Failed to encode private key")
-	}
-	cert, err := tls.X509KeyPair(pemKey, pemKey)
+
+	log.Println("✅ OOB Module initialized")
+
+	// Simulate sending a request
+	response, err := oobModule.SendOOBRequest("ygg_peer1", "test_data")
 	if err != nil {
-		log.Fatal(err)
+		log.Println("❌ OOB request failed:", err)
+	} else {
+		log.Println("✅ OOB response received:", response)
 	}
-	return cert
 }
