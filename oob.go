@@ -1,4 +1,4 @@
-package oob
+package main
 
 import (
 	"crypto/ed25519"
