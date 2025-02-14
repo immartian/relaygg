@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -38,12 +39,12 @@ func generateSelfSignedCert() tls.Certificate {
 	if err != nil {
 		log.Fatal(err)
 	}
-	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{}, &x509.Certificate{}, priv.Public(), priv)
+	certDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{}, &x509.Certificate{}, priv.PublicKey, priv)
 	if err != nil {
 		log.Fatal(err)
 	}
 	pemCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed()})
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed[:32]})
 	cert, err := tls.X509KeyPair(pemCert, pemKey)
 	if err != nil {
 		log.Fatal(err)
@@ -54,14 +55,14 @@ func generateSelfSignedCert() tls.Certificate {
 // NewOOBModule initializes the QUIC transport over Yggdrasil.
 func NewOOBModule(peers []string) (*OOBModule, error) {
 	cert := generateSelfSignedCert()
-	logger := log.Default()
+	logger := core.NewLogger(os.Stdout)
 
-	yggNode, err := core.New(&cert, logger)
+	yggNode, err := core.New(&cert, logger, core.WithPrivateKey(priv))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Yggdrasil core: %v", err)
 	}
 
-	quicTransport, err := yggquic.New(yggNode, &cert, nil)
+	quicTransport, err := yggquic.New(yggNode, cert, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start QUIC transport: %v", err)
 	}
