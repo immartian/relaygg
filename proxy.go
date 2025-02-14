@@ -47,7 +47,8 @@ func loadConfig(path string) error {
 
 func initYggdrasil() {
 	var err error
-	yggNode, err = core.New()
+	cert := generateSelfSignedCert()
+	yggNode, err = core.New(&cert, nil)
 	if err != nil {
 		log.Fatalf("❌ ERROR: Failed to initialize Yggdrasil core: %v", err)
 	}
@@ -83,13 +84,20 @@ func startTLSProxy() {
 func handleTLSConnection(clientConn net.Conn) {
 	defer clientConn.Close()
 	fmt.Println("DEBUG: Handling TLS connection from client")
-	go sendOOBMessage("wikipedia.org")
+	// Capture and relay the real SNI
+	buf := make([]byte, 256)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		log.Println("❌ ERROR: Reading SNI from client failed:", err)
+		return
+	}
+	realSNI := string(buf[:n])
+	go sendOOBMessage(realSNI)
 }
 
 func startOOBListener() {
-	tlsCert := generateSelfSignedCert()
-
 	var err error
+	tlsCert := generateSelfSignedCert()
 	quicTransport, err = yggquic.New(yggNode, tlsCert, nil)
 	if err != nil {
 		log.Fatalf("❌ ERROR: Failed to start Yggdrasil QUIC transport: %v", err)
