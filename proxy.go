@@ -11,8 +11,8 @@ import (
 	"net"
 	"os"
 
-	yggdrasil "github.com/yggdrasil-network/yggdrasil-go"
-	yggquic "github.com/yggdrasil-network/yggquic"
+	"github.com/yggdrasil-network/yggdrasil-go/src/core"
+	"github.com/yggdrasil-network/yggquic"
 )
 
 type Config struct {
@@ -22,7 +22,8 @@ type Config struct {
 }
 
 var config Config
-var yggCore *yggdrasil.Core
+var yggNode *core.Core
+var quicTransport *yggquic.YggdrasilTransport
 
 func main() {
 	configPath := flag.String("config", "config.json", "Path to configuration file")
@@ -47,13 +48,14 @@ func loadConfig(path string) error {
 }
 
 func initYggdrasil() {
+	cfg := config.GenerateConfig()
 	var err error
-	yggCore, err = yggdrasil.New()
+	yggNode, err = core.New(cfg.Certificate, nil)
 	if err != nil {
-		log.Fatalf("ERROR: Failed to initialize Yggdrasil core: %v", err)
+		log.Fatalf("❌ ERROR: Failed to initialize Yggdrasil core: %v", err)
 	}
-	if err := yggCore.Start(); err != nil {
-		log.Fatalf("ERROR: Failed to start Yggdrasil core: %v", err)
+	if err := yggNode.Start(); err != nil {
+		log.Fatalf("❌ ERROR: Failed to start Yggdrasil core: %v", err)
 	}
 	fmt.Println("✅ Yggdrasil Core Initialized")
 }
@@ -92,14 +94,16 @@ func handleTLSConnection(clientConn net.Conn) {
 
 func startOOBListener() {
 	tlsCert := generateSelfSignedCert()
-	yggTransport, err := yggquic.New(yggCore, tlsCert, nil)
+
+	var err error
+	quicTransport, err = yggquic.New(yggNode, tlsCert, nil)
 	if err != nil {
 		log.Fatalf("❌ ERROR: Failed to start Yggdrasil QUIC transport: %v", err)
 	}
 	fmt.Println("🔹 OOB QUIC Listener started over Yggdrasil")
 
 	for {
-		conn, err := yggTransport.Accept()
+		conn, err := quicTransport.Accept()
 		if err != nil {
 			log.Println("❌ ERROR: Failed to accept OOB connection:", err)
 			continue
@@ -120,14 +124,6 @@ func handleOOBSession(conn net.Conn) {
 	fmt.Println("🔹 Received real SNI via OOB:", string(buf[:n]))
 }
 
-func getPublicKeyFromIP(ip string) (string, error) {
-	// Resolve Yggdrasil IP to Public Key
-	nodeInfo, err := yggCore.FindNodeByAddress(ip)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve Yggdrasil IP %s to public key: %v", ip, err)
-	}
-	return hex.EncodeToString(nodeInfo.Key), nil
-}
 func sendOOBMessage(realSNI string) {
 	ctx := context.Background()
 	if len(config.OOBPeers) == 0 {
@@ -135,16 +131,11 @@ func sendOOBMessage(realSNI string) {
 		return
 	}
 
-	peerIP := config.OOBPeers[0] // Use the stored IP
-	peerPublicKey, err := getPublicKeyFromIP(peerIP)
-	if err != nil {
-		log.Println("❌ ERROR: Failed to resolve public key from Yggdrasil IP:", peerIP, err)
-		return
-	}
-
+	peerIP := config.OOBPeers[0]
+	peerPublicKey := hex.EncodeToString(yggNode.LookupNodeKey(peerIP))
 	fmt.Println("DEBUG: Sending real SNI via OOB to peer:", peerPublicKey)
 
-	conn, err := yggCore.Dial("yggdrasil", peerPublicKey)
+	conn, err := yggNode.Dial("yggdrasil", peerPublicKey)
 	if err != nil {
 		log.Println("❌ ERROR: Failed to connect to Yggdrasil peer", peerPublicKey, ":", err)
 		return
