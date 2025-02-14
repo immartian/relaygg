@@ -7,4 +7,4 @@ Key challenges include:
 - Ensuring all clients, including cURL, properly send the intended SNI when connecting through the proxy.
 - Maintaining TLS handshake integrity despite modifying the SNI.
 - Efficiently handling multiple concurrent connections while preserving low-latency OOB transmission.
-- How to be usable to make sure Yggdrasil peer is easy to config and not blocked by the firewall. 
+- Ensuring Yggdrasil peer configuration is user-friendly and resistant to firewall restrictions.
