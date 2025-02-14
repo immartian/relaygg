@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -48,14 +46,10 @@ func loadConfig(path string) error {
 }
 
 func initYggdrasil() {
-	cfg := config.GenerateConfig()
 	var err error
-	yggNode, err = core.New(cfg.Certificate, nil)
+	yggNode, err = core.New()
 	if err != nil {
 		log.Fatalf("❌ ERROR: Failed to initialize Yggdrasil core: %v", err)
-	}
-	if err := yggNode.Start(); err != nil {
-		log.Fatalf("❌ ERROR: Failed to start Yggdrasil core: %v", err)
 	}
 	fmt.Println("✅ Yggdrasil Core Initialized")
 }
@@ -125,30 +119,28 @@ func handleOOBSession(conn net.Conn) {
 }
 
 func sendOOBMessage(realSNI string) {
-	ctx := context.Background()
 	if len(config.OOBPeers) == 0 {
 		log.Println("❌ No OOB peers configured")
 		return
 	}
 
 	peerIP := config.OOBPeers[0]
-	peerPublicKey := hex.EncodeToString(yggNode.LookupNodeKey(peerIP))
-	fmt.Println("DEBUG: Sending real SNI via OOB to peer:", peerPublicKey)
+	fmt.Println("DEBUG: Sending real SNI via OOB to peer IP:", peerIP)
 
-	conn, err := yggNode.Dial("yggdrasil", peerPublicKey)
+	conn, err := quicTransport.Dial("yggdrasil", peerIP)
 	if err != nil {
-		log.Println("❌ ERROR: Failed to connect to Yggdrasil peer", peerPublicKey, ":", err)
+		log.Println("❌ ERROR: Failed to connect to Yggdrasil peer", peerIP, "via QUIC:", err)
 		return
 	}
 	defer conn.Close()
 
 	_, err = conn.Write([]byte(realSNI + "\n"))
 	if err != nil {
-		log.Println("❌ ERROR: Writing to OOB stream to", peerPublicKey, "failed:", err)
+		log.Println("❌ ERROR: Writing to OOB stream to", peerIP, "failed:", err)
 		return
 	}
 
-	fmt.Println("✅ Successfully sent real SNI via OOB to", peerPublicKey, ":", realSNI)
+	fmt.Println("✅ Successfully sent real SNI via OOB to", peerIP, ":", realSNI)
 }
 
 func generateSelfSignedCert() tls.Certificate {
