@@ -6,27 +6,22 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"math/rand"
 	"net"
 	"os"
-	"sync"
-	"time"
 
+	yggdrasil "github.com/yggdrasil-network/yggdrasil-go"
 	yggquic "github.com/yggdrasil-network/yggquic"
 )
 
-// Config struct holds parameters from config.json.
 type Config struct {
 	LocalProxyAddr string   `json:"local_proxy_addr"`
-	OOBPort        string   `json:"oob_port"`
 	OOBPeers       []string `json:"oob_peers"`
 	FakeSNI        string   `json:"fake_sni"`
 }
 
 var config Config
-var requestMap sync.Map // Mapping of request ID to real SNI and waiting channel
+var yggCore *yggdrasil.Core
 
 func main() {
 	configPath := flag.String("config", "config.json", "Path to configuration file")
@@ -35,13 +30,8 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	fmt.Println("Config loaded successfully")
-
-	// Start TLS proxy in a goroutine
+	initYggdrasil()
 	go startTLSProxy()
-	fmt.Println("TLS Proxy initiated")
-
-	// Start the OOB QUIC listener
 	startOOBListener()
 }
 
@@ -55,185 +45,103 @@ func loadConfig(path string) error {
 	return decoder.Decode(&config)
 }
 
-// startTLSProxy starts the TLS proxy with SNI interception.
+func initYggdrasil() {
+	var err error
+	yggCore, err = yggdrasil.New()
+	if err != nil {
+		log.Fatalf("ERROR: Failed to initialize Yggdrasil core: %v", err)
+	}
+	if err := yggCore.Start(); err != nil {
+		log.Fatalf("ERROR: Failed to start Yggdrasil core: %v", err)
+	}
+	fmt.Println("✅ Yggdrasil Core Initialized")
+}
+
 func startTLSProxy() {
 	listener, err := tls.Listen("tcp", config.LocalProxyAddr, &tls.Config{
 		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-			fmt.Println("DEBUG: Client requested SNI:", chi.ServerName) // Log SNI every time
-			realSNI := chi.ServerName
-			if realSNI == "" {
-				fmt.Println("ERROR: Client did not send SNI")
-			}
-			return handleClientHello(chi)
+			fmt.Println("DEBUG: Client requested SNI:", chi.ServerName)
+			return &tls.Config{
+				ServerName:         config.FakeSNI,
+				InsecureSkipVerify: true,
+			}, nil
 		},
 	})
 	if err != nil {
-		log.Fatalf("Failed to start TLS Proxy: %v", err)
+		log.Fatalf("❌ Failed to start TLS Proxy: %v", err)
 	}
 	defer listener.Close()
-	fmt.Println("TLS Proxy listening on", config.LocalProxyAddr)
+	fmt.Println("🔹 TLS Proxy listening on", config.LocalProxyAddr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("Connection error:", err)
+			log.Println("❌ Connection error:", err)
 			continue
 		}
 		go handleTLSConnection(conn)
 	}
 }
 
-// handleClientHello captures the SNI and modifies it.
-func handleClientHello(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-	reqID := generateRequestID()
-	realSNI := chi.ServerName
-	fmt.Println("DEBUG: Captured SNI:", realSNI)
-
-	// Send realSNI via OOB QUIC and wait for response
-	respChan := make(chan string, 1)
-	requestMap.Store(reqID, respChan)
-	go sendOOBMessage(reqID, realSNI)
-
-	// Return modified TLS config with FakeSNI
-	return &tls.Config{
-		ServerName:         config.FakeSNI,
-		InsecureSkipVerify: true,
-	}, nil
-}
-
-// handleTLSConnection manages TLS handshakes and relays data.
 func handleTLSConnection(clientConn net.Conn) {
 	defer clientConn.Close()
 	fmt.Println("DEBUG: Handling TLS connection from client")
-
-	// Generate a new TLS configuration with FakeSNI
-	tlsConfig := &tls.Config{
-		ServerName:         config.FakeSNI, // Ensure FakeSNI is injected
-		InsecureSkipVerify: true,
-	}
-
-	// Connect to FakeSNI destination
-	targetConn, err := tls.Dial("tcp", config.FakeSNI+":443", tlsConfig)
-	if err != nil {
-		log.Println("ERROR: FakeSNI connection failed:", err)
-		return
-	}
-	defer targetConn.Close()
-	fmt.Println("DEBUG: Connected to remote server using FakeSNI:", config.FakeSNI)
-
-	// Relay data
-	go io.Copy(targetConn, clientConn)
-	io.Copy(clientConn, targetConn)
+	go sendOOBMessage("wikipedia.org")
 }
 
-// startOOBListener starts a QUIC listener for OOB communication.
 func startOOBListener() {
-	listener, err := yggquic.Listen(config.OOBPort, generateTLSConfig(), nil)
+	tlsCert := generateSelfSignedCert()
+	yggTransport, err := yggquic.New(yggCore, tlsCert, nil)
 	if err != nil {
-		log.Fatalf("ERROR: Failed to start OOB listener: %v", err)
+		log.Fatalf("❌ ERROR: Failed to start Yggdrasil QUIC transport: %v", err)
 	}
-	fmt.Println("OOB Listener started on", config.OOBPort)
+	fmt.Println("🔹 OOB QUIC Listener started over Yggdrasil")
 
 	for {
-		session, err := listener.Accept(context.Background())
+		conn, err := yggTransport.Accept()
 		if err != nil {
-			log.Println("ERROR: Failed to accept OOB session:", err)
+			log.Println("❌ ERROR: Failed to accept OOB connection:", err)
 			continue
 		}
-		go handleOOBSession(session)
+		fmt.Println("🔹 OOB session established with", conn.RemoteAddr())
+		go handleOOBSession(conn)
 	}
 }
 
-// handleOOBSession processes incoming SNI messages and returns responses.
-func handleOOBSession(session yggquic.Connection) {
-	stream, err := session.AcceptStream(context.Background())
-	if err != nil {
-		log.Println("ERROR: Failed to accept OOB stream:", err)
-		return
-	}
-	defer stream.Close()
-
-	// Read request (format: "reqID|realSNI")
+func handleOOBSession(conn net.Conn) {
+	defer conn.Close()
 	buf := make([]byte, 256)
-	n, err := stream.Read(buf)
-	if err != nil && err != io.EOF {
-		log.Println("ERROR: Reading OOB message failed:", err)
+	n, err := conn.Read(buf)
+	if err != nil {
+		log.Println("❌ ERROR: Reading OOB message failed:", err)
 		return
 	}
-	message := string(buf[:n])
-	fmt.Println("Received OOB:", message)
-
-	// Extract request ID and real SNI
-	var reqID, realSNI string
-	fmt.Sscanf(message, "%s|%s", &reqID, &realSNI)
-
-	// Find waiting channel and send response
-	if ch, ok := requestMap.Load(reqID); ok {
-		respChan := ch.(chan string)
-		respChan <- realSNI
-		requestMap.Delete(reqID)
-	}
+	fmt.Println("🔹 Received real SNI via OOB:", string(buf[:n]))
 }
 
-// sendOOBMessage sends the real SNI with a request ID via OOB QUIC.
-func sendOOBMessage(reqID, realSNI string) {
+func sendOOBMessage(realSNI string) {
 	ctx := context.Background()
 	if len(config.OOBPeers) == 0 {
-		log.Println("No OOB peers configured")
+		log.Println("❌ No OOB peers configured")
 		return
 	}
-	peer := config.OOBPeers[rand.Intn(len(config.OOBPeers))]
+	peerPublicKey := config.OOBPeers[0]
+	fmt.Println("DEBUG: Sending real SNI via OOB to peer:", peerPublicKey)
 
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-		NextProtos:         []string{"snirelay"},
-	}
-
-	session, err := yggquic.Dial(ctx, peer, tlsConfig, nil)
+	conn, err := yggCore.Dial("yggdrasil", peerPublicKey)
 	if err != nil {
-		log.Println("ERROR: Failed to open OOB session:", err)
+		log.Println("❌ ERROR: Failed to connect to Yggdrasil peer", peerPublicKey, ":", err)
 		return
 	}
-	defer session.CloseWithError(0, "Done")
+	defer conn.Close()
 
-	stream, err := session.OpenStreamSync(ctx)
+	_, err = conn.Write([]byte(realSNI + "\n"))
 	if err != nil {
-		log.Println("ERROR: Failed to open OOB stream:", err)
+		log.Println("❌ ERROR: Writing to OOB stream to", peerPublicKey, "failed:", err)
 		return
 	}
-	defer stream.Close()
 
-	// Send request as "reqID|realSNI"
-	msg := fmt.Sprintf("%s|%s\n", reqID, realSNI)
-	_, err = stream.Write([]byte(msg))
-	if err != nil {
-		log.Println("ERROR: Writing to OOB stream failed:", err)
-		return
-	}
-	fmt.Println("DEBUG: Sent real SNI via OOB to", peer, ":", msg)
-
-	// **NEW: Wait for acknowledgment before closing**
-	buf := make([]byte, 256)
-	n, err := stream.Read(buf)
-	if err != nil && err != io.EOF {
-		log.Println("ERROR: Reading OOB response failed:", err)
-		return
-	}
-	ack := string(buf[:n])
-	fmt.Println("Received acknowledgment from OOB peer:", ack)
-}
-
-// generateRequestID creates a unique identifier for request mapping.
-func generateRequestID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
-}
-
-// generateTLSConfig creates a self-signed TLS config for QUIC.
-func generateTLSConfig() *tls.Config {
-	return &tls.Config{
-		Certificates: []tls.Certificate{generateSelfSignedCert()},
-		NextProtos:   []string{"snirelay"},
-	}
+	fmt.Println("✅ Successfully sent real SNI via OOB to", peerPublicKey, ":", realSNI)
 }
 
 func generateSelfSignedCert() tls.Certificate {
