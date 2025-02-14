@@ -4,8 +4,22 @@
 
 The proxy intercepts TLS connections at the local node, extracts the real SNI, replaces it with a camouflage SNI, and transmits the real SNI to a remote peer over an encrypted QUIC channel. The remote peer then initiates a genuine TLS handshake with the intended server and returns the correct `ServerHello` response. This mechanism allows users to bypass SNI-based censorship while maintaining a valid end-to-end TLS session.
 
-Key challenges include:
+## Config file:
+```json
+{
+    "local_proxy_addr": "127.0.0.1:8443",
+    "oob_port": "[::]:8008",
+    "oob_peers": [
+
+    ],
+    "fake_sni": "harvard.edu"
+  }
+```
+
+
+## Key challenges include:
 - Ensuring all clients, including cURL, properly send the intended SNI when connecting through the proxy.
 - Maintaining TLS handshake integrity despite modifying the SNI.
 - Efficiently handling multiple concurrent connections while preserving low-latency OOB transmission.
 - Ensuring Yggdrasil peer configuration is user-friendly and resistant to firewall restrictions.
+

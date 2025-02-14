@@ -14,7 +14,8 @@ import (
 	"sync"
 	"time"
 
-	quic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go"
+	yggquic "github.com/yggdrasil-network/yggquic"
 )
 
 // Config struct holds parameters from config.json.
@@ -35,11 +36,11 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	fmt.Println("✅ Config loaded successfully")
+	fmt.Println("Config loaded successfully")
 
 	// Start TLS proxy in a goroutine
 	go startTLSProxy()
-	fmt.Println("✅ TLS Proxy initiated")
+	fmt.Println("TLS Proxy initiated")
 
 	// Start the OOB QUIC listener
 	startOOBListener()
@@ -62,21 +63,21 @@ func startTLSProxy() {
 			fmt.Println("DEBUG: Client requested SNI:", chi.ServerName) // Log SNI every time
 			realSNI := chi.ServerName
 			if realSNI == "" {
-				fmt.Println("❌ ERROR: Client did not send SNI")
+				fmt.Println("ERROR: Client did not send SNI")
 			}
 			return handleClientHello(chi)
 		},
 	})
 	if err != nil {
-		log.Fatalf("❌ Failed to start TLS Proxy: %v", err)
+		log.Fatalf("Failed to start TLS Proxy: %v", err)
 	}
 	defer listener.Close()
-	fmt.Println("🔹 TLS Proxy listening on", config.LocalProxyAddr)
+	fmt.Println("TLS Proxy listening on", config.LocalProxyAddr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("❌ Connection error:", err)
+			log.Println("Connection error:", err)
 			continue
 		}
 		go handleTLSConnection(conn)
@@ -115,7 +116,7 @@ func handleTLSConnection(clientConn net.Conn) {
 	// Connect to FakeSNI destination
 	targetConn, err := tls.Dial("tcp", config.FakeSNI+":443", tlsConfig)
 	if err != nil {
-		log.Println("❌ ERROR: FakeSNI connection failed:", err)
+		log.Println("ERROR: FakeSNI connection failed:", err)
 		return
 	}
 	defer targetConn.Close()
@@ -128,16 +129,16 @@ func handleTLSConnection(clientConn net.Conn) {
 
 // startOOBListener starts a QUIC listener for OOB communication.
 func startOOBListener() {
-	listener, err := quic.ListenAddr(config.OOBPort, generateTLSConfig(), nil)
+	listener, err := yggquic.Listen(config.OOBPort, generateTLSConfig(), nil)
 	if err != nil {
-		log.Fatalf("❌ ERROR: Failed to start OOB listener: %v", err)
+		log.Fatalf("ERROR: Failed to start OOB listener: %v", err)
 	}
-	fmt.Println("🔹 OOB Listener started on", config.OOBPort)
+	fmt.Println("OOB Listener started on", config.OOBPort)
 
 	for {
 		session, err := listener.Accept(context.Background())
 		if err != nil {
-			log.Println("❌ ERROR: Failed to accept OOB session:", err)
+			log.Println("ERROR: Failed to accept OOB session:", err)
 			continue
 		}
 		go handleOOBSession(session)
@@ -148,7 +149,7 @@ func startOOBListener() {
 func handleOOBSession(session quic.Connection) {
 	stream, err := session.AcceptStream(context.Background())
 	if err != nil {
-		log.Println("❌ ERROR: Failed to accept OOB stream:", err)
+		log.Println("ERROR: Failed to accept OOB stream:", err)
 		return
 	}
 	defer stream.Close()
@@ -157,11 +158,11 @@ func handleOOBSession(session quic.Connection) {
 	buf := make([]byte, 256)
 	n, err := stream.Read(buf)
 	if err != nil && err != io.EOF {
-		log.Println("❌ ERROR: Reading OOB message failed:", err)
+		log.Println("ERROR: Reading OOB message failed:", err)
 		return
 	}
 	message := string(buf[:n])
-	fmt.Println("🔹 Received OOB:", message)
+	fmt.Println("Received OOB:", message)
 
 	// Extract request ID and real SNI
 	var reqID, realSNI string
@@ -179,24 +180,26 @@ func handleOOBSession(session quic.Connection) {
 func sendOOBMessage(reqID, realSNI string) {
 	ctx := context.Background()
 	if len(config.OOBPeers) == 0 {
-		log.Println("❌ No OOB peers configured")
+		log.Println("No OOB peers configured")
 		return
 	}
 	peer := config.OOBPeers[rand.Intn(len(config.OOBPeers))]
 
-	session, err := quic.DialAddr(ctx, peer, &tls.Config{
+	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
-		NextProtos:         []string{"quic"},
-	}, nil)
+		NextProtos:         []string{"snirelay"},
+	}
+
+	session, err := yggquic.Dial(ctx, peer, tlsConfig, nil)
 	if err != nil {
-		log.Println("❌ ERROR: Failed to open OOB session:", err)
+		log.Println("ERROR: Failed to open OOB session:", err)
 		return
 	}
 	defer session.CloseWithError(0, "Done")
 
 	stream, err := session.OpenStreamSync(ctx)
 	if err != nil {
-		log.Println("❌ ERROR: Failed to open OOB stream:", err)
+		log.Println("ERROR: Failed to open OOB stream:", err)
 		return
 	}
 	defer stream.Close()
@@ -205,7 +208,7 @@ func sendOOBMessage(reqID, realSNI string) {
 	msg := fmt.Sprintf("%s|%s\n", reqID, realSNI)
 	_, err = stream.Write([]byte(msg))
 	if err != nil {
-		log.Println("❌ ERROR: Writing to OOB stream failed:", err)
+		log.Println("ERROR: Writing to OOB stream failed:", err)
 		return
 	}
 	fmt.Println("DEBUG: Sent real SNI via OOB to", peer, ":", msg)
@@ -214,11 +217,11 @@ func sendOOBMessage(reqID, realSNI string) {
 	buf := make([]byte, 256)
 	n, err := stream.Read(buf)
 	if err != nil && err != io.EOF {
-		log.Println("❌ ERROR: Reading OOB response failed:", err)
+		log.Println("ERROR: Reading OOB response failed:", err)
 		return
 	}
 	ack := string(buf[:n])
-	fmt.Println("🔹 Received acknowledgment from OOB peer:", ack)
+	fmt.Println("Received acknowledgment from OOB peer:", ack)
 }
 
 // generateRequestID creates a unique identifier for request mapping.
@@ -230,7 +233,7 @@ func generateRequestID() string {
 func generateTLSConfig() *tls.Config {
 	return &tls.Config{
 		Certificates: []tls.Certificate{generateSelfSignedCert()},
-		NextProtos:   []string{"quic"},
+		NextProtos:   []string{"snirelay"},
 	}
 }
 
