@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -119,13 +120,28 @@ func handleOOBSession(conn net.Conn) {
 	fmt.Println("🔹 Received real SNI via OOB:", string(buf[:n]))
 }
 
+func getPublicKeyFromIP(ip string) (string, error) {
+	// Resolve Yggdrasil IP to Public Key
+	nodeInfo, err := yggCore.FindNodeByAddress(ip)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve Yggdrasil IP %s to public key: %v", ip, err)
+	}
+	return hex.EncodeToString(nodeInfo.Key), nil
+}
 func sendOOBMessage(realSNI string) {
 	ctx := context.Background()
 	if len(config.OOBPeers) == 0 {
 		log.Println("❌ No OOB peers configured")
 		return
 	}
-	peerPublicKey := config.OOBPeers[0]
+
+	peerIP := config.OOBPeers[0] // Use the stored IP
+	peerPublicKey, err := getPublicKeyFromIP(peerIP)
+	if err != nil {
+		log.Println("❌ ERROR: Failed to resolve public key from Yggdrasil IP:", peerIP, err)
+		return
+	}
+
 	fmt.Println("DEBUG: Sending real SNI via OOB to peer:", peerPublicKey)
 
 	conn, err := yggCore.Dial("yggdrasil", peerPublicKey)
